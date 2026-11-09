@@ -219,8 +219,10 @@ pub fn direction() -> egui::epaint::text::TextDirection {
     }
 }
 
-/// `s` laid out on one line in the interface's direction.
+/// `s` laid out on one line in the interface's direction. Its script's font is loaded for the
+/// next frame when it isn't yet (a Bangla file name in an English window, #405).
 pub fn galley(p: &Painter, font: FontId, s: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
+    crate::theme::note_text(s);
     let mut job = egui::text::LayoutJob::simple(s.to_owned(), font, color, f32::INFINITY);
     job.direction = direction();
     p.layout_job(job)

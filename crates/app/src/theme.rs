@@ -403,14 +403,21 @@ fn ui_font() -> Option<Vec<u8>> {
     return fc_match("sans-serif").and_then(|f| std::fs::read(f).ok());
 }
 
-/// The script fonts for `code` (every language's with `all`): (key, bytes), in fallback order.
-fn script_fonts(code: &str, all: bool) -> Vec<(String, Vec<u8>)> {
+/// Whether a script font that these languages need is loaded: every one with `all`, else the
+/// interface language's (`code`) and those the text on screen needs (`content`, [`note_text`]).
+fn script_wanted(langs: &[&str], code: &str, all: bool, content: &[&str]) -> bool {
+    all || langs.contains(&code) || content.iter().any(|c| langs.contains(c))
+}
+
+/// The script fonts for `code` and `content` (every language's with `all`): (key, bytes), in
+/// fallback order.
+fn script_fonts(code: &str, all: bool, content: &[&str]) -> Vec<(String, Vec<u8>)> {
     #[cfg(any(windows, target_os = "macos"))]
     {
         let dir = font_dir();
         SCRIPT_FONTS
             .iter()
-            .filter(|(_, _, langs)| all || langs.contains(&code))
+            .filter(|(_, _, langs)| script_wanted(langs, code, all, content))
             // The first file there is used (older systems name some differently); a .ttc's
             // first face is the regular one.
             .filter_map(|(key, files, _)| {
@@ -424,7 +431,7 @@ fn script_fonts(code: &str, all: bool) -> Vec<(String, Vec<u8>)> {
         let mut seen = std::collections::HashSet::new();
         SCRIPT_LANGS
             .iter()
-            .filter(|(ours, _)| all || *ours == code)
+            .filter(|(ours, _)| script_wanted(&[*ours], code, all, content))
             .filter_map(|(_, fc)| fc_match(&format!(":lang={fc}")))
             // Several languages share a font (Devanagari, the CJK collection): loaded once.
             .filter(|f| seen.insert(f.clone()))
@@ -491,13 +498,92 @@ pub fn prepare_fonts() {
     });
 }
 
-/// The script fonts loaded now: the interface language's, or all of them.
-static LOADED: std::sync::Mutex<Option<(String, bool)>> = std::sync::Mutex::new(None);
+/// The script fonts loaded now: all of them, or not (the interface language's and the text's),
+/// and which ([`SCRIPT_FONTS`]' keys; Linux: [`SCRIPT_LANGS`]' languages).
+static LOADED: std::sync::Mutex<Option<(bool, Vec<&'static str>)>> = std::sync::Mutex::new(None);
 
 /// Load the fonts the interface language needs (after it changed).
 pub fn language_fonts(ctx: &egui::Context) {
-    let all = LOADED.lock().unwrap().as_ref().is_some_and(|l| l.1);
+    let all = LOADED.lock().unwrap().as_ref().is_some_and(|l| l.0);
     load_fonts(ctx, all);
+}
+
+/// The languages whose script fonts the text on screen needs besides the interface language's
+/// (#405: a video's Bangla title in an English window drew as boxes, Nirmala UI not being
+/// loaded for English). Noted as text is laid out ([`note_text`]), loaded at the next frame's
+/// start ([`content_fonts`]), and kept while MDM runs.
+static CONTENT_LANGS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+/// The scripts [`note_text`] has met ([`script_of`]'s bits).
+static SCRIPTS_MET: AtomicU64 = AtomicU64::new(0);
+/// [`note_text`] met a script for the first time since the last frame.
+static SCRIPT_MET_NEW: AtomicBool = AtomicBool::new(false);
+/// Every script font is loaded ([`all_scripts`]): a list of every language by its own name
+/// shows, and its names aren't noted, or the CJK fonts would stay once it closes (#72).
+static ALL_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// The script of `c`, for its font: a bit of its own and a language whose font has it (as
+/// [`SCRIPT_FONTS`] and [`SCRIPT_LANGS`] name them). None: the interface font has it (Latin,
+/// Greek, Cyrillic…), or no table names a font for it.
+fn script_of(c: char) -> Option<(u32, &'static str)> {
+    Some(match u32::from(c) {
+        0x0530..=0x058F => (0, "hy"),
+        0x0590..=0x05FF | 0xFB1D..=0xFB4F => (1, "he"),
+        0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => {
+            (2, "ar")
+        }
+        0x0900..=0x097F | 0xA8E0..=0xA8FF => (3, "hi"),
+        0x0980..=0x09FF => (4, "bn"),
+        0x0A00..=0x0A7F => (5, "pa"),
+        0x0A80..=0x0AFF => (6, "gu"),
+        0x0B00..=0x0B7F => (7, "or"),
+        0x0B80..=0x0BFF => (8, "ta"),
+        0x0C00..=0x0C7F => (9, "te"),
+        0x0C80..=0x0CFF => (10, "kn"),
+        0x0D00..=0x0D7F => (11, "ml"),
+        0x0E00..=0x0E7F => (12, "th"),
+        0x0E80..=0x0EFF => (13, "lo"),
+        0x10A0..=0x10FF | 0x2D00..=0x2D2F => (14, "ka"),
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF => (15, "ko"),
+        0x1200..=0x139F | 0x2D80..=0x2DDF | 0xAB00..=0xAB2F => (16, "am"),
+        0x13A0..=0x13FF | 0xAB70..=0xABBF => (17, "chr"),
+        0x1780..=0x17FF | 0x19E0..=0x19FF => (18, "km"),
+        0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => (19, "ja"),
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3134F => (20, "zh-hans"),
+        _ => return None,
+    })
+}
+
+/// Note the scripts of text about to be drawn (#405): a script whose font isn't loaded (not
+/// the interface language's) is loaded at the next frame's start ([`content_fonts`]). Cheap
+/// enough for every text of every frame: ASCII returns at once, and each script is noted once.
+pub fn note_text(s: &str) {
+    if s.is_ascii() || ALL_LOADED.load(Ordering::Relaxed) {
+        return;
+    }
+    let met = SCRIPTS_MET.load(Ordering::Relaxed);
+    let mut new = 0u64;
+    for c in s.chars() {
+        let Some((bit, lang)) = script_of(c) else {
+            continue;
+        };
+        if (met | new) & (1 << bit) == 0 {
+            new |= 1 << bit;
+            CONTENT_LANGS.lock().unwrap().push(lang);
+        }
+    }
+    if new != 0 {
+        SCRIPTS_MET.fetch_or(new, Ordering::Relaxed);
+        SCRIPT_MET_NEW.store(true, Ordering::Release);
+    }
+}
+
+/// At a frame's start: load the script fonts the text noted since the last frame needs
+/// ([`note_text`]). Nothing is rebuilt when they were loaded already (the interface
+/// language's own script).
+pub fn content_fonts(ctx: &egui::Context) {
+    if SCRIPT_MET_NEW.swap(false, Ordering::AcqRel) {
+        language_fonts(ctx);
+    }
 }
 
 /// Load every script font, for a list of all languages by their own names, until
@@ -515,39 +601,38 @@ pub fn interface_fonts(ctx: &egui::Context) {
 fn load_fonts(ctx: &egui::Context, all: bool) {
     #[cfg(windows)]
     classic_text(ctx);
+    ALL_LOADED.store(all, Ordering::Relaxed);
     let code = crate::i18n::code().to_owned();
+    let content = CONTENT_LANGS.lock().unwrap().clone();
     let mut loaded = LOADED.lock().unwrap();
-    // Only the script fonts depend on the language: rebuild when that set changes.
-    let needs = |code: &str| -> Vec<&str> {
-        #[cfg(any(windows, target_os = "macos"))]
-        return SCRIPT_FONTS
-            .iter()
-            .filter(|(_, _, langs)| all || langs.contains(&code))
-            .map(|(key, ..)| *key)
-            .collect();
-        #[cfg(not(any(windows, target_os = "macos")))]
-        return SCRIPT_LANGS
-            .iter()
-            .filter(|(ours, _)| all || *ours == code)
-            .map(|(ours, _)| *ours)
-            .collect();
-    };
-    if let Some((old, old_all)) = loaded.as_ref()
+    // Only the script fonts depend on the languages: rebuild when that set changes.
+    #[cfg(any(windows, target_os = "macos"))]
+    let needs: Vec<&'static str> = SCRIPT_FONTS
+        .iter()
+        .filter(|(_, _, langs)| script_wanted(langs, &code, all, &content))
+        .map(|(key, ..)| *key)
+        .collect();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let needs: Vec<&'static str> = SCRIPT_LANGS
+        .iter()
+        .filter(|(ours, _)| script_wanted(&[*ours], &code, all, &content))
+        .map(|(ours, _)| *ours)
+        .collect();
+    if let Some((old_all, old_needs)) = loaded.as_ref()
         && *old_all == all
-        && needs(old) == needs(&code)
+        && *old_needs == needs
     {
-        *loaded = Some((code, all));
         return;
     }
-    fonts(ctx, &code, all);
-    *loaded = Some((code, all));
+    fonts(ctx, &code, all, &content);
+    *loaded = Some((all, needs));
 }
 
 /// IDM draws with Segoe UI 9 pt (12 px at 100 %): the system's own copy, nothing bundled
 /// (elsewhere the system's interface font, [`ui_font`]; else egui's default font). Every family
 /// falls back to it (Tahoma has no Armenian or Georgian), then to the script fonts for `code`
-/// (all with `all`).
-fn fonts(ctx: &egui::Context, code: &str, all: bool) {
+/// and the text's languages, `content` (all with `all`).
+fn fonts(ctx: &egui::Context, code: &str, all: bool, content: &[&str]) {
     let mut defs = egui::FontDefinitions::default();
     let ui = ui_font();
     if let Some(bytes) = &ui {
@@ -579,7 +664,7 @@ fn fonts(ctx: &egui::Context, code: &str, all: bool) {
             .insert("segoe-ui-fallback".into(), on_baseline(bytes));
         fallbacks.push("segoe-ui-fallback".into());
     }
-    for (key, bytes) in script_fonts(code, all) {
+    for (key, bytes) in script_fonts(code, all, content) {
         defs.font_data.insert(key.clone(), on_baseline(bytes));
         fallbacks.push(key);
     }
@@ -744,6 +829,32 @@ mod mode_tests {
     }
 }
 
+#[cfg(test)]
+mod script_tests {
+    use super::{script_of, script_wanted};
+
+    /// #405: the script of a file name's letters names the font it needs, whatever the
+    /// interface language; Latin, Greek, Cyrillic and digits need none.
+    #[test]
+    fn a_names_script_loads_its_font() {
+        let lang = |c| script_of(c).map(|s| s.1);
+        assert_eq!(lang('ব'), Some("bn"));
+        assert_eq!(lang('क'), Some("hi"));
+        assert_eq!(lang('ก'), Some("th"));
+        assert_eq!(lang('あ'), Some("ja"));
+        assert_eq!(lang('한'), Some("ko"));
+        assert_eq!(lang('日'), Some("zh-hans"));
+        for c in ['a', 'é', 'Ж', 'Ω', '7', '-'] {
+            assert_eq!(lang(c), None, "{c}");
+        }
+        let indic = ["as", "bn", "gu", "hi"];
+        assert!(script_wanted(&indic, "en", false, &["bn"]));
+        assert!(!script_wanted(&indic, "en", false, &["th"]));
+        assert!(script_wanted(&indic, "hi", false, &[]));
+        assert!(script_wanted(&indic, "en", true, &[]));
+    }
+}
+
 /// Every mark a window draws (punctuation, arrows, ✔, quotation marks…: what isn't a letter or a
 /// digit) has a glyph in every language's font chain, so none comes out as an empty box (#185:
 /// "✔ Connected" in the browser offer window; "→" on Linux).
@@ -850,7 +961,7 @@ mod glyph_tests {
             let mut needed = code_marks.clone();
             marks(&text, &mut needed);
             let ctx = egui::Context::default();
-            super::fonts(&ctx, &code, false);
+            super::fonts(&ctx, &code, false, &[]);
             let mut out = ctx.run_ui(Default::default(), |_| {});
             out.textures_delta.clear();
             // A computer without the language's script font draws none of it (a CI image without

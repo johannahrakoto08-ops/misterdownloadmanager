@@ -8343,6 +8343,8 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // MDM's own work: not counted as the graphics API's time to its first frame (#280).
         crate::renderer::own_work_begin();
+        // The fonts for a script the last frame's text needed (#405).
+        crate::theme::content_fonts(ctx);
         self.tick(ctx);
         crate::renderer::own_work_end();
     }

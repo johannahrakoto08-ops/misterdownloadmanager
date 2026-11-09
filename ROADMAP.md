@@ -17,6 +17,8 @@ Everything below ships together, in version 0.5.0.
   once after a long flush ([#361](https://github.com/anefzaoui/misterdownloadmanager/issues/361))
 - ✅ No freeze when the clipboard monitor meets a program that holds the clipboard or hangs
   ([#418](https://github.com/anefzaoui/misterdownloadmanager/issues/418))
+- ✅ File names in another script than the interface language's show their letters, not boxes
+  ([#405](https://github.com/anefzaoui/misterdownloadmanager/issues/405))
 - ✅ Freeze reports taken after the window has already answered say so, instead of blaming a deadlock
   (part of [#355](https://github.com/anefzaoui/misterdownloadmanager/issues/355))
 - ✅ **Move/Rename** works on several selected downloads at once: pick a folder and they all go there
