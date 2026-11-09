@@ -455,3 +455,46 @@ async fn the_hook_sees_the_part_file_before_any_data() {
         );
     }
 }
+
+/// #372: an address that refuses MDM (a search engine's redirect link lets only browsers
+/// through), while the browser's own request for the file went on elsewhere: the file comes
+/// from there, under its own name. With no such address, the refusal stands.
+#[tokio::test]
+async fn a_refused_link_goes_where_the_browser_went() {
+    let all = data(300 * 1024);
+    let file_data = all.clone();
+    let s = Server::start(move |seen| {
+        if seen.path.starts_with("/url") {
+            (403, Vec::new(), b"forbidden".to_vec())
+        } else {
+            file(seen, &file_data, true)
+        }
+    })
+    .await;
+    let start = |dir: &std::path::Path, browser: Option<url::Url>| {
+        Download::start(
+            Request {
+                url: s.url("/url?q=paper"),
+                headers: HeaderMap::new(),
+                dest: Destination::Dir(dir.to_owned()),
+            },
+            Options {
+                browser_url: browser,
+                ..Options::default()
+            },
+        )
+    };
+    let alone = tempfile::tempdir().unwrap();
+    let refused = start(alone.path(), None).wait().await.unwrap_err();
+    assert!(
+        matches!(refused, mdm_engine::Error::Status(_)),
+        "{refused:?}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let out = start(dir.path(), Some(s.url("/files/paper.pdf")))
+        .wait()
+        .await
+        .expect("the browser's address answers");
+    assert!(std::fs::read(&out.path).unwrap() == all);
+    assert_eq!(out.path.file_name().unwrap(), "paper.pdf");
+}

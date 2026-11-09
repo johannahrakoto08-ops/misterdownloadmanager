@@ -2331,6 +2331,13 @@ impl App {
             },
             post: context.post.clone().map(|body| body.into_bytes().into()),
             on_file_created: Some(mark_hook(url, context.referer.as_deref())),
+            // Where the browser's own request for the file went: asked when this address
+            // refuses MDM, as a search engine's redirect link does (#372).
+            browser_url: context
+                .final_url
+                .as_deref()
+                .and_then(|u| url::Url::parse(u).ok())
+                .filter(|u| u != url),
             ..Options::default()
         };
         RequestParts { headers, opts }

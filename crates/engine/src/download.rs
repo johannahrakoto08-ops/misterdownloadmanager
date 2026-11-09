@@ -132,6 +132,12 @@ pub struct Options {
     /// name, so whatever the hook attaches to it — Windows' Mark of the Web stream, macOS'
     /// quarantine attribute — stays with the finished file.
     pub on_file_created: Option<FileHook>,
+    /// From the browser: where its own request for the file ended up after its redirects, when
+    /// that isn't the address asked for. A new download asks it when that address refuses the
+    /// download (`Error::link_dead`), and goes on from it: a search engine's redirect link (a
+    /// Google result's) lets only browsers through (#372). Not in the resume state (like the
+    /// headers): a resume asks the address the download went on from.
+    pub browser_url: Option<Url>,
 }
 
 /// A callback given the path of a file the engine created (`Options::on_file_created`).
@@ -209,6 +215,7 @@ impl Default for Options {
             extra_roots: Vec::new(),
             post: None,
             on_file_created: None,
+            browser_url: None,
         }
     }
 }
@@ -1452,7 +1459,7 @@ async fn run(
 }
 
 async fn run_fresh(
-    req: Request,
+    mut req: Request,
     opts: Options,
     shared: Arc<Shared>,
     cancel: CancellationToken,
@@ -1486,8 +1493,38 @@ async fn run_fresh(
             let as_get = AsGet::default();
             let seen = shared.seen.get_or_init(Default::default).clone();
             let client0 = client(&opts, &target, &as_get, &seen)?;
-            let (answer, ttfb) =
-                first_get(&client0, &target, &asked, &opts, shared, cancel).await?;
+            let first = first_get(&client0, &target, &asked, &opts, shared, cancel).await;
+            // Refused where it was asked for, while the browser's own request for the file went
+            // on elsewhere: a search engine's redirect link lets only browsers through (#372).
+            // The browser's address is asked, and the download goes on from it. A form isn't
+            // posted again elsewhere.
+            let elsewhere = match &first {
+                Err(e) if e.link_dead() && unlocked.is_none() && opts.post.is_none() => opts
+                    .browser_url
+                    .clone()
+                    .filter(|u| *u != target)
+                    .map(|u| (u, e.to_string())),
+                _ => None,
+            };
+            let (client0, first) = match elsewhere {
+                Some((alt, why)) => {
+                    shared.event(format!(
+                        "{} refused the download ({why}): asking where the browser's own \
+                         request for it went, {}",
+                        target.host_str().unwrap_or("?"),
+                        alt.host_str().unwrap_or("?"),
+                    ));
+                    // The first address's cookies and logins stay with its own host.
+                    let headers = scoped_headers(&asked, &target, &alt);
+                    let client1 = client(&opts, &alt, &as_get, &seen)?;
+                    let got = first_get(&client1, &alt, &headers, &opts, shared, cancel).await;
+                    req.url = alt;
+                    req.headers = headers;
+                    (client1, got)
+                }
+                None => (client0, first),
+            };
+            let (answer, ttfb) = first?;
             seen.answered(&answer.0);
             (as_get, client0, answer, ttfb)
         }
