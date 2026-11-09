@@ -2288,10 +2288,15 @@ mod host_copy_tests {
         std::fs::copy("/bin/sleep", &old).unwrap();
         let mut running = std::process::Command::new(&old).arg("30").spawn().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(
-            std::fs::write(&old, b"x").is_err() || cfg!(target_os = "macos"),
-            "Linux refuses to write over a running program"
-        );
+        // Linux has refused to open a running program for writing ("Text file busy"). Newer
+        // kernels (GitHub's Ubuntu 26.04 runner) allow it, as macOS does: the copy must be
+        // replaced either way. Only opened, never written: writing would corrupt the program
+        // that runs.
+        if std::fs::OpenOptions::new().write(true).open(&old).is_ok() {
+            eprintln!(
+                "this system lets a running program's file be written: no \"Text file busy\""
+            );
+        }
         let from = program(t.path(), "new-host", "echo two");
         let copy = install_host_copy(&from, &dir, Path::new("/x.AppImage")).unwrap();
         assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&from).unwrap());
