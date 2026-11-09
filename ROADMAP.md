@@ -19,6 +19,8 @@ Everything below ships together, in version 0.5.0.
   ([#418](https://github.com/anefzaoui/misterdownloadmanager/issues/418))
 - ✅ File names in another script than the interface language's show their letters, not boxes
   ([#405](https://github.com/anefzaoui/misterdownloadmanager/issues/405))
+- ✅ English dates in the list follow the system's 12-hour clock
+  ([#392](https://github.com/anefzaoui/misterdownloadmanager/issues/392))
 - ✅ Freeze reports taken after the window has already answered say so, instead of blaming a deadlock
   (part of [#355](https://github.com/anefzaoui/misterdownloadmanager/issues/355))
 - ✅ **Move/Rename** works on several selected downloads at once: pick a folder and they all go there

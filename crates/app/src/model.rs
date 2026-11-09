@@ -926,26 +926,43 @@ pub fn stamp_time(stored: &str) -> Option<chrono::NaiveDateTime> {
 }
 
 /// A stored stamp as the list shows it: in the formats chosen in Options → Regional; else IDM's
-/// own text in English, and the user's Windows region format in other languages (its digits and
-/// order; month names would be in the region's language).
+/// own text in English (on the system's clock, [`idm_text`]), and the user's Windows region
+/// format in other languages (its digits and order; month names would be in the region's
+/// language).
 pub fn date_text(stored: &str) -> String {
     let Some(t) = stamp_time(stored) else {
         return stored.to_owned();
     };
-    if english() && !crate::regional::current().custom {
-        return stored.to_owned();
+    let formats = crate::regional::current();
+    if english() && !formats.custom {
+        return if formats.clock24 {
+            stored.to_owned()
+        } else {
+            idm_text(t, false)
+        };
     }
     when_text(t)
+}
+
+/// IDM's own text for a time, `Oct 28 21:44:12 2026`; with a 12-hour clock (the system's, when
+/// Options → Regional follows it) `Oct 28 9:44:12 PM 2026` (#392).
+fn idm_text(t: chrono::NaiveDateTime, clock24: bool) -> String {
+    if clock24 {
+        t.format(STAMP).to_string()
+    } else {
+        t.format("%b %d %-I:%M:%S %p %Y").to_string()
+    }
 }
 
 /// A local time as the interface writes dates and times (Options → Regional; IDM's text in
 /// English; the Windows region's elsewhere).
 pub fn when_text(t: chrono::NaiveDateTime) -> String {
-    if crate::regional::current().custom {
+    let formats = crate::regional::current();
+    if formats.custom {
         return crate::i18n::ltr(&crate::regional::short_date_time(t));
     }
     if english() {
-        return t.format(STAMP).to_string();
+        return idm_text(t, formats.clock24);
     }
     #[cfg(windows)]
     if let Some(s) = crate::win32::local_date_time(t) {
@@ -1116,6 +1133,19 @@ mod stamp_tests {
         let oct = super::stamp_time("Oct 28 21:44:12 2026").unwrap();
         assert!(oct < apr, "October 2026 comes before April 2027");
         assert!(super::stamp_time("not a date").is_none());
+    }
+
+    /// #392: IDM's text in English, on a 12-hour clock when that is the system's.
+    #[test]
+    fn idm_text_follows_the_clock() {
+        let at = |s| super::stamp_time(s).unwrap();
+        let evening = at("Oct 28 21:44:12 2026");
+        assert_eq!(super::idm_text(evening, true), "Oct 28 21:44:12 2026");
+        assert_eq!(super::idm_text(evening, false), "Oct 28 9:44:12 PM 2026");
+        let night = at("Apr 02 00:05:00 2027");
+        assert_eq!(super::idm_text(night, false), "Apr 02 12:05:00 AM 2027");
+        let noon = at("Apr 02 12:00:00 2027");
+        assert_eq!(super::idm_text(noon, false), "Apr 02 12:00:00 PM 2027");
     }
 }
 
