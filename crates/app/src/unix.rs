@@ -2283,20 +2283,16 @@ mod host_copy_tests {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("browser-host");
         std::fs::create_dir_all(&dir).unwrap();
-        // A real program (a script would run as the shell, its file only read), run under the
-        // name `sleep`: a multi-call coreutils (uutils, Ubuntu's since 25.10, GitHub's Ubuntu
-        // 26.04 runner) picks its command by that name, and under the helper's it ran none and
-        // stopped at once.
+        // A real program (a script would run as the shell, its file only read): the shell itself,
+        // waiting for a line that never comes. Not a copy of `sleep`: on GitHub's Ubuntu 26.04
+        // runner (its coreutils are uutils) that one stopped at once, even run as `sleep`.
         let old = dir.join(HOST);
-        std::fs::copy("/bin/sleep", &old).unwrap();
-        let mut running = {
-            use std::os::unix::process::CommandExt;
-            std::process::Command::new(&old)
-                .arg0("sleep")
-                .arg("30")
-                .spawn()
-                .unwrap()
-        };
+        std::fs::copy("/bin/sh", &old).unwrap();
+        let mut running = std::process::Command::new(&old)
+            .args(["-c", "read line"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(running.try_wait().unwrap().is_none(), "the old copy runs");
         // Linux refuses to open a running program for writing ("Text file busy"), macOS doesn't:
