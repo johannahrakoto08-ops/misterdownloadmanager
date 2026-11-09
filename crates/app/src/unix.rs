@@ -2283,15 +2283,25 @@ mod host_copy_tests {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("browser-host");
         std::fs::create_dir_all(&dir).unwrap();
-        // A real program (a script would run as the shell, its file only read).
+        // A real program (a script would run as the shell, its file only read), run under the
+        // name `sleep`: a multi-call coreutils (uutils, Ubuntu's since 25.10, GitHub's Ubuntu
+        // 26.04 runner) picks its command by that name, and under the helper's it ran none and
+        // stopped at once.
         let old = dir.join(HOST);
         std::fs::copy("/bin/sleep", &old).unwrap();
-        let mut running = std::process::Command::new(&old).arg("30").spawn().unwrap();
+        let mut running = {
+            use std::os::unix::process::CommandExt;
+            std::process::Command::new(&old)
+                .arg0("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
+        };
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // Linux has refused to open a running program for writing ("Text file busy"). Newer
-        // kernels (GitHub's Ubuntu 26.04 runner) allow it, as macOS does: the copy must be
-        // replaced either way. Only opened, never written: writing would corrupt the program
-        // that runs.
+        assert!(running.try_wait().unwrap().is_none(), "the old copy runs");
+        // Linux refuses to open a running program for writing ("Text file busy"), macOS doesn't:
+        // the copy must be replaced either way. Only opened to see, never written: writing would
+        // corrupt the program that runs where a system allows it.
         if std::fs::OpenOptions::new().write(true).open(&old).is_ok() {
             eprintln!(
                 "this system lets a running program's file be written: no \"Text file busy\""
