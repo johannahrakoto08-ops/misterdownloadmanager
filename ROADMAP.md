@@ -15,6 +15,8 @@ Everything below ships together, in version 0.5.0.
 
 - ✅ Fast downloads to a hard disk or a full SSD cache: no stop-and-go, no connections dropped all at
   once after a long flush ([#361](https://github.com/anefzaoui/misterdownloadmanager/issues/361))
+- ✅ No freeze when the clipboard monitor meets a program that holds the clipboard or hangs
+  ([#418](https://github.com/anefzaoui/misterdownloadmanager/issues/418))
 - ✅ Freeze reports taken after the window has already answered say so, instead of blaming a deadlock
   (part of [#355](https://github.com/anefzaoui/misterdownloadmanager/issues/355))
 - ✅ **Move/Rename** works on several selected downloads at once: pick a folder and they all go there

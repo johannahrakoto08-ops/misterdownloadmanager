@@ -557,6 +557,8 @@ pub struct App {
     /// yet) and when.
     clip_seen: Option<Option<String>>,
     clip_checked: Option<Instant>,
+    /// The clipboard monitor's read under way, on its own thread (#418).
+    clip_read: Option<crate::ClipboardRead>,
     confirm_delete: Option<dialogs::ConfirmDelete>,
     /// Queue right-click → Delete, asking first: the queue and the question.
     confirm_queue_delete: Option<(usize, dialogs::Confirm)>,
@@ -1045,6 +1047,7 @@ impl App {
             limit_notice: None,
             clip_seen: None,
             clip_checked: None,
+            clip_read: None,
             tray: None,
             tray_limiter: None,
             // Started with the session (#226): hidden from the first frame.
@@ -2945,17 +2948,34 @@ impl App {
     fn watch_clipboard(&mut self, ctx: &egui::Context) {
         if !self.settings.clipboard_autostart {
             self.clip_seen = None;
+            self.clip_read = None;
             return;
         }
         ctx.request_repaint_after(Duration::from_secs(1));
-        if self
-            .clip_checked
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
-        {
-            return;
-        }
-        self.clip_checked = Some(Instant::now());
-        let text = crate::clipboard_text().map(|t| t.trim().to_owned());
+        // Read on a thread of its own (#418): the window never waits for the clipboard, which
+        // a program holding it, or a hung one rendering its text, can make wait for long.
+        let text = match self.clip_read.as_ref().map(|r| r.try_recv()) {
+            Some(Ok(text)) => {
+                self.clip_read = None;
+                text.map(|t| t.trim().to_owned())
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.clip_read = None;
+                return;
+            }
+            None => {
+                if self
+                    .clip_checked
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+                {
+                    return;
+                }
+                self.clip_checked = Some(Instant::now());
+                self.clip_read = crate::clipboard_text_later(ctx);
+                return;
+            }
+        };
         // The first look only notes what is there: turning it on doesn't grab an old link.
         let Some(before) = self.clip_seen.replace(text.clone()) else {
             return;

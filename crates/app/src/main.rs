@@ -103,10 +103,87 @@ pub fn offscreen() -> bool {
 /// The clipboard's text, if any. Never read in an off-screen run ([`offscreen`]): its windows
 /// open from scripts, and the clipboard belongs to the person at the computer (Add URL's
 /// address came from it, and was fetched).
+///
+/// Read on a thread of its own ([`clipboard_read`]) and waited for [`CLIP_WAIT`] at most: a
+/// read waits for the program that put the text there when that program holds the clipboard
+/// or renders its text only once asked (Windows' delayed rendering), and a hung one froze
+/// MDM's window with it (#418). Then there is no text.
 pub fn clipboard_text() -> Option<String> {
     read_clipboard(offscreen(), || {
-        arboard::Clipboard::new().ok()?.get_text().ok()
+        let deadline = std::time::Instant::now() + CLIP_WAIT;
+        loop {
+            let (tx, rx) = std::sync::mpsc::channel();
+            if clipboard_read(move |text| {
+                let _ = tx.send(text);
+            }) {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                return rx.recv_timeout(left).ok().flatten();
+            }
+            // Another read is under way: the monitor's, done in a moment, or one stuck.
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     })
+}
+
+/// A read of the clipboard under way ([`clipboard_text_later`]): its text, once read.
+pub type ClipboardRead = std::sync::mpsc::Receiver<Option<String>>;
+
+/// [`clipboard_text`] without waiting for it, for the clipboard monitor (every second): the
+/// text comes on the channel and the window is asked to draw again then. None: nothing was
+/// started (an off-screen run, or a read still under way).
+pub fn clipboard_text_later(ctx: &egui::Context) -> Option<ClipboardRead> {
+    if offscreen() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    clipboard_read(move |text| {
+        let _ = tx.send(text);
+        ctx.request_repaint();
+    })
+    .then_some(rx)
+}
+
+/// How long [`clipboard_text`] waits for the clipboard.
+const CLIP_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A read of the clipboard is under way: one at a time, so a read stuck on a hung program
+/// doesn't gather threads behind it.
+static CLIP_READING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the clipboard's text and hand it to `done`, on a thread of its own; false when another
+/// read is still under way, or no thread could start. macOS reads it here, on the window's
+/// thread, as before: AppKit's pasteboard is the main thread's, and its reads don't wait on
+/// other programs the way Windows' do.
+fn clipboard_read(done: impl FnOnce(Option<String>) + Send + 'static) -> bool {
+    use std::sync::atomic::Ordering;
+    let read = || {
+        arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut c| c.get_text().ok())
+    };
+    if cfg!(target_os = "macos") {
+        done(read());
+        return true;
+    }
+    if CLIP_READING.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    let started = std::thread::Builder::new()
+        .name("clipboard".into())
+        .spawn(move || {
+            let text = read();
+            CLIP_READING.store(false, Ordering::Release);
+            done(text);
+        });
+    if started.is_err() {
+        CLIP_READING.store(false, Ordering::Release);
+        return false;
+    }
+    true
 }
 
 fn read_clipboard(off: bool, read: impl FnOnce() -> Option<String>) -> Option<String> {
